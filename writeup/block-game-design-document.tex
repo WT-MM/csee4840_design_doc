@@ -4,6 +4,7 @@
 \usepackage{graphicx}
 \usepackage{tikz}
 \usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{listings}
@@ -56,7 +57,7 @@ Every face in a block world is a rectangle, so we rasterize \textbf{quadrilatera
 
 \section{System Block Diagram}
 
-The system consists of ten major functional blocks split across software (user-space C on Linux) and hardware (SystemVerilog on the FPGA fabric), connected through a Linux kernel driver and the Avalon memory-mapped bus.
+The system consists of twelve major functional blocks split across software (user-space C on Linux, blocks~1--5), a kernel driver (block~6), and hardware (SystemVerilog on the FPGA fabric, blocks~7--12), connected through the Avalon memory-mapped bus.
 
 \begin{figure}[!htbp]
 \centering
@@ -214,7 +215,7 @@ The system consists of ten major functional blocks split across software (user-s
 \item \textbf{User space $\rightarrow$ Driver}: \texttt{write()} for bulk command stream data, \texttt{ioctl()} for control (palette, flip, status). Driver uses \texttt{copy\_from\_user} then \texttt{iowrite32} across the bridge.
 \item \textbf{Driver $\rightarrow$ Avalon MM Slave}: 32-bit writes over the HPS-to-FPGA lightweight bridge at base \texttt{0xFF20\_0000}.
 \item \textbf{Avalon Slave $\rightarrow$ Rasterizer}: 8~KB command FIFO in BRAM; ARM pushes descriptors, rasterizer pops them.
-\item \textbf{Rasterizer $\rightarrow$ Z-buffer / Framebuffer}: Direct BRAM ports at one access per pixel clock.
+\item \textbf{Rasterizer $\rightarrow$ Z-buffer / Framebuffer}: Direct M10K BRAM ports sustaining one pixel per cycle. The Z-buffer uses a dual-port pipelined read-modify-write (read at cycle $n$, conditional write at cycle $n{+}1$); the framebuffer back buffer uses a write port while scanout reads the front buffer on the opposite port (see \S\ref{sec:rast}).
 \item \textbf{Framebuffer $\rightarrow$ Scanout $\rightarrow$ Palette $\rightarrow$ DAC}: Three-stage pipeline at the 25.175~MHz VGA pixel clock.
 \end{itemize}
 
@@ -249,7 +250,7 @@ For each emitted quad (four vertices in world space):
 \item Viewport map: $\text{screen}_x = (x+1) \cdot 160$, $\text{screen}_y = (1-y) \cdot 120$.
 \item Compute four edge coefficients. For an edge from $(x_0, y_0)$ to $(x_1, y_1)$:
 \[ A = y_0 - y_1, \quad B = x_1 - x_0, \quad C = -(A \cdot x_0 + B \cdot y_0) \]
-The edge function $E(x,y) = Ax + By + C$ is non-negative on the interior side for CCW winding.
+The edge function $E(x,y) = Ax + By + C$ is non-negative on the interior side for CCW winding. Software packs each coefficient as signed Q24.8 (value $\cdot 256$) before writing to the descriptor; see the rationale following Table~\ref{tab:quaddesc}.
 \item Compute depth plane coefficients $z(x,y) = z_0 + \frac{dz}{dx}x + \frac{dz}{dy}y$ from the three screen-space vertices with their depths.
 \item Compute UV gradients for textured quads.
 \item Compute the screen-space bounding box, clamped to $[0, 319] \times [0, 239]$.
@@ -328,6 +329,8 @@ i.e., the low bit of each counter is dropped. The same address is therefore pres
 Textures are 16$\times$16 palette-indexed tiles stored in BRAM. The rasterizer carries $u$ and $v$ as Q16.16 fixed-point (matching the descriptor format); only the low four integer bits select the texel. Nearest-neighbor lookup:
 \[ \text{texel} = \text{tex\_ram}[\text{texture\_id}][\lfloor u \rfloor \bmod 16][\lfloor v \rfloor \bmod 16] \]
 The output is an 8-bit palette index, written directly to the framebuffer.
+
+\paragraph{Affine vs.\ perspective-correct interpolation.} The UV gradients $du_{dx}, dv_{dx}, du_{dy}, dv_{dy}$ are \emph{affine} in screen space, so $u$ and $v$ advance by a constant per pixel --- the same adder-per-step scheme as the edge functions, and the reason texturing costs only two extra adds per pixel in hardware. Strictly, the correct quantities to interpolate linearly in screen space are $u/w$, $v/w$, and $1/w$, divided per pixel to recover true $u, v$; affine interpolation is an approximation that produces visible warping on quads at steep viewing angles (the classic ``PS1 look''). For a $320\times240$ viewport of block-game content, the artifact is rarely objectionable and saves one divider per pixel. \emph{Future fix:} add $1/w$, $u/w$, $v/w$ to the descriptor, pipeline a reciprocal unit (a $\sim$10-cycle Newton--Raphson iterator or a $2^{10}$-entry lookup) into the rasterizer, and divide per pixel; the rest of the pipeline is unchanged. This is a clean upgrade path once the affine version is working.
 
 \section{Resource Budgets}
 
@@ -425,7 +428,7 @@ reserved & FIFO\_WORDS & VSY & FEM & FFL & BSY \\
 
 \begin{tabular}{rll}
 Bit 0 & BSY & Rasterizer busy (actively processing a quad). \\
-Bit 1 & FFL & Command FIFO full; writes will be dropped. \\
+Bit 1 & FFL & Command FIFO full. Status-only indicator: when set, subsequent FIFO writes are stalled by the slave asserting Avalon \texttt{waitrequest} until a slot frees (no data is dropped). Software reads FFL only as a hint to pace its writes. \\
 Bit 2 & FEM & Command FIFO empty. \\
 Bit 3 & VSY & Currently in vertical blanking interval (safe to flip). \\
 Bits 15:4 & FIFO\_WORDS & Number of 32-bit words currently queued in the command FIFO, 0--2048. \\
@@ -495,8 +498,12 @@ Each descriptor is 64 bytes, written as 16 consecutive 32-bit little-endian word
 \bottomrule
 \end{tabular}
 \caption{Quad descriptor (64 bytes). Textured quads append a second 64-byte block carrying UV origin and gradients; flat-shaded quads omit the second block.}
+\label{tab:quaddesc}
 \end{table}
 
+\noindent\textbf{Edge-coefficient format rationale.} Screen-space $x$ ranges up to 319 and $y$ up to 239, so the edge function $E(x,y) = A\cdot x + B\cdot y + C$ with $A = y_0{-}y_1$, $B = x_1{-}x_0$, $C = -(A\cdot x_0 + B\cdot y_0)$ can reach $|E|_{\max} \approx 2\cdot\text{area} \lesssim 77{,}000$ for a viewport-sized quad. That is beyond the $\pm 32{,}768$ integer range of Q16.16 --- a naive Q16.16 accumulator would silently wrap. Q24.8 gives integer range $\pm 8.4$M (23 bits of integer magnitude, comfortably more than the 17 needed) while retaining $2^{-8}$ sub-pixel precision for future MSAA-style sampling. Software packs integer pixel deltas as $\texttt{A} = (y_0{-}y_1)\cdot 256$ etc. --- a single shift in C on the ARM side.
+
+\vspace{0.8em}
 \noindent\textbf{Depth format rationale.} Viewport-mapped depth lands in $[0,\,1]$ nominally, but the interpolated value $z_0 + \mathrm{d}z_{\mathrm{d}x}\cdot\Delta x + \mathrm{d}z_{\mathrm{d}y}\cdot\Delta y$ at the far corner of a large bounding box can slightly exceed 1 due to fixed-point rounding and edge-function inclusivity. Q1.15 for \texttt{z0} (range $[0, 2)$) absorbs this margin while keeping the same 16-bit width as the Z-buffer. Per-pixel depth gradients in a $320\times240$ viewport with near/far clip at 0.1/100 never exceed a few parts per thousand, so signed Q1.15 gives $\sim$3$\times 10^{-5}$ precision --- a better fit than Q4.12 given the actual dynamic range.
 
 \vspace{0.8em}
@@ -535,6 +542,7 @@ Per-pixel UV is interpolated incrementally using the same adder-per-step scheme 
 \noindent\textbf{Texture upload.} For v1, the 64 texture tiles will be baked into BRAM at synthesis using \texttt{\$readmemh} against a hex file produced by an offline asset pipeline; no runtime texture upload path exists. A second write window analogous to the palette port is a straightforward extension if dynamic texture loading becomes necessary.
 
 \subsection{IOCTL Interface}
+\label{sec:ioctl}
 
 The device driver exposes \texttt{/dev/voxel\_gpu} with the following ioctls:
 
@@ -563,7 +571,8 @@ for each frame:
   1. poll input, update game state
   2. ioctl(fd, VGPU_CLEAR_Z)
   3. cull chunks, cull faces, transform quads -> quad_desc[]
-  4. write(fd, quad_desc, n * 64)
+     //   total_bytes = flat_count * 64 + textured_count * 128
+  4. write(fd, buf, total_bytes)
   5. ioctl(fd, VGPU_FLIP)   // blocks until rasterizer drains + vsync
 \end{lstlisting}
 
@@ -574,7 +583,7 @@ The project is structured so that each phase produces a runnable, end-to-end sys
 \begin{enumerate}
 \item \textbf{VGA + framebuffer baseline.} FPGA VGA timing controller displays a test pattern from a 320$\times$240 BRAM framebuffer, 2$\times$2 upscaled to 640$\times$480. ARM pokes individual pixels via the bridge to confirm the full write path. Extends lab~3's \texttt{vga\_ball} with a real frame buffer plus the palette BRAM and scanout pipeline.
 
-\item \textbf{Linux device driver.} Implement \texttt{voxel\_gpu} platform driver bound to \texttt{csee4840,voxel\_gpu-1.0}. Expose \texttt{/dev/voxel\_gpu} with \texttt{write()}, the five ioctls from \S\ref{sec:quaddesc}, and \texttt{VGPU\_SET\_PALETTE}. User-space test program uploads a palette and streams pixels.
+\item \textbf{Linux device driver.} Implement \texttt{voxel\_gpu} platform driver bound to \texttt{csee4840,voxel\_gpu-1.0}. Expose \texttt{/dev/voxel\_gpu} with \texttt{write()} and the five ioctls defined in \S\ref{sec:ioctl}. User-space test program uploads a palette and streams pixels.
 
 \item \textbf{Software renderer prototype.} Full user-space C pipeline: world representation, frustum and hidden-face culling, MVP transform, quad setup, and software rasterization writing pixels to the framebuffer through the driver. Proves the geometry and culling code correct independent of FPGA hardware.
 
