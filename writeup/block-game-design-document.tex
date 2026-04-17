@@ -64,13 +64,13 @@ The system consists of twelve major functional blocks split across software (use
 \begin{tikzpicture}[
   x=1.75cm, y=1.2cm,
   swblock/.style={rectangle, draw=blue!60, fill=blue!10, thick,
-                  minimum width=2.6cm, minimum height=0.9cm, align=center,
+                  minimum width=2.9cm, minimum height=0.9cm, align=center,
                   font=\footnotesize},
   kernblock/.style={rectangle, draw=purple!70, fill=purple!10, thick,
-                    minimum width=2.6cm, minimum height=0.9cm, align=center,
+                    minimum width=2.9cm, minimum height=0.9cm, align=center,
                     font=\footnotesize},
   hwblock/.style={rectangle, draw=orange!80, fill=orange!15, thick,
-                  minimum width=2.6cm, minimum height=0.9cm, align=center,
+                  minimum width=2.9cm, minimum height=0.9cm, align=center,
                   font=\footnotesize},
   extblock/.style={rectangle, draw=gray!80, fill=gray!15, thick,
                    minimum width=1.9cm, minimum height=0.75cm, align=center,
@@ -97,13 +97,13 @@ The system consists of twelve major functional blocks split across software (use
 \node[kernblock] (drv) at (2.5, 3.0) {6. voxel\_gpu Driver\\\tiny{/dev/voxel\_gpu}};
 
 % Row Y=1.7: Hardware row A
-\node[hwblock] (avalon) at (1.0, 1.7) {7. Avalon Slave\\\tiny{regs + FIFO}};
+\node[hwblock] (avalon) at (1.0, 1.7) {7. Avalon Slave\\\tiny{regs + 8\,KB FIFO}};
 \node[hwblock] (rast)   at (3.5, 1.7) {8. Rasterizer\\\tiny{4 edge fns}};
-\node[hwblock] (zbuf)   at (6.0, 1.7) {9. Z-Buffer\\\tiny{320$\times$240}};
+\node[hwblock] (zbuf)   at (6.0, 1.7) {9. Z-Buffer\\\tiny{320$\times$240$\times$16b, $\sim$154\,KB}};
 
 % Row Y=0.4: Hardware row B
-\node[hwblock] (tex) at (1.0, 0.4) {10. Texture Unit\\\tiny{64 tiles}};
-\node[hwblock] (fb)  at (3.5, 0.4) {11. Framebuffer\\\tiny{double-buf}};
+\node[hwblock] (tex) at (1.0, 0.4) {10. Texture Unit\\\tiny{64$\times$16$\times$16, 16\,KB}};
+\node[hwblock] (fb)  at (3.5, 0.4) {11. Framebuffer\\\tiny{2$\times$320$\times$240$\times$8b, $\sim$154\,KB}};
 \node[hwblock] (vga) at (6.0, 0.4) {12. VGA Scanout\\\tiny{+ palette}};
 
 % Row Y=-0.9: Monitor
@@ -142,25 +142,25 @@ The system consists of twelve major functional blocks split across software (use
 \draw[arrow] (cmdw) -- node[elbl,right]{syscall} (drv);
 
 % Driver -> Avalon Slave
-\draw[arrow] (drv) -- node[elbl,right]{Avalon MM} (avalon);
+\draw[arrow] (drv) -- node[elbl,right]{Avalon MM, 32b} (avalon);
 
 % Hardware: Avalon -> Rasterizer
-\draw[arrow] (avalon) -- node[elbl,above]{quads} (rast);
+\draw[arrow] (avalon) -- node[elbl,above]{quads, 32b} (rast);
 
 % Rasterizer <-> Z-Buffer
-\draw[biarrow] (rast) -- node[elbl,above]{z test} (zbuf);
+\draw[biarrow] (rast) -- node[elbl,above]{z test, 16b} (zbuf);
 
 % Rasterizer -> Texture (down-left)
-\draw[arrow] (rast) -- node[elbl,right]{UV} (tex);
+\draw[arrow] (rast) -- node[elbl,right]{UV, Q16.16} (tex);
 
 % Texture -> Framebuffer (right along bottom row)
-\draw[arrow] (tex) -- node[elbl,above]{texel} (fb);
+\draw[arrow] (tex) -- node[elbl,above]{texel, 8b} (fb);
 
 % Framebuffer -> VGA Scanout
-\draw[arrow] (fb) -- node[elbl,above]{pixels} (vga);
+\draw[arrow] (fb) -- node[elbl,above]{pixels, 8b idx} (vga);
 
 % VGA -> Monitor
-\draw[arrow] (vga) -- node[elbl,right]{RGB} (mon);
+\draw[arrow] (vga) -- node[elbl,right]{RGB, 24b} (mon);
 
 \end{tikzpicture}
 \caption{System block diagram. Data flows from USB input, through the Linux game on the ARM, across the Avalon bus via a kernel driver, into the FPGA rasterizer pipeline, and out to the VGA monitor. Dashed regions separate user-space software, kernel-space driver, and FPGA fabric.}
@@ -198,7 +198,7 @@ The system consists of twelve major functional blocks split across software (use
 
 \item \textbf{Quad Rasterizer}: Pops quad descriptors from the command FIFO, iterates each quad's bounding box, evaluates four edge functions per pixel, interpolates depth and UV coordinates incrementally.
 
-\item \textbf{Z-Buffer Unit}: 16-bit depth buffer at 320$\times$240 in BRAM (150~KB). Compares interpolated depth against stored depth; gates framebuffer writes.
+\item \textbf{Z-Buffer Unit}: 16-bit depth buffer at 320$\times$240 in BRAM ($\sim$154~KB). Compares interpolated depth against stored depth; gates framebuffer writes.
 
 \item \textbf{Texture Unit}: Stores up to 64 16$\times$16 palette-indexed texture tiles in BRAM. Nearest-neighbor UV lookup.
 
@@ -245,7 +245,7 @@ Before per-block work, reject entire chunks whose axis-aligned bounding boxes fa
 For each emitted quad (four vertices in world space):
 \begin{enumerate}
 \item Multiply each vertex by the combined model-view-projection matrix (4$\times$4, Q16.16 fixed-point).
-\item \textbf{Near-plane handling.} If any of the four vertices has $w \leq w_{\text{near}}$, the quad straddles or lies behind the near plane; perspective divide would produce invalid (negative or enormous) screen coordinates and the projected shape may be non-convex, breaking the edge-function test. For v1 we \emph{reject} such quads outright (cheap, one comparison per vertex). The visual artifact is that a face partially behind the camera pops out of view one frame early; acceptable given a small near-plane distance. A future revision can replace rejection with Sutherland--Hodgman clipping against the near plane, which splits the quad into a convex polygon of up to five vertices --- more work for the geometry stage but no change to the rasterizer contract.
+\item \textbf{Near-plane handling.} If any of the four vertices has $w \leq w_{\text{near}}$ (with $w_{\text{near}} = 0.05$ world units, i.e.\ $\sim$5\% of a block edge), the quad straddles or lies behind the near plane; perspective divide would produce invalid (negative or enormous) screen coordinates and the projected shape may be non-convex, breaking the edge-function test. For v1 we \emph{reject} such quads outright (cheap, one comparison per vertex). The visual artifact is that a face partially behind the camera pops out of view one frame early; acceptable given a small near-plane distance. A future revision can replace rejection with Sutherland--Hodgman clipping against the near plane, which splits the quad into a convex polygon of up to five vertices --- more work for the geometry stage but no change to the rasterizer contract.
 \item Perspective divide: divide $x, y, z$ by $w$.
 \item Viewport map: $\text{screen}_x = (x+1) \cdot 160$, $\text{screen}_y = (1-y) \cdot 120$.
 \item Compute four edge coefficients. For an edge from $(x_0, y_0)$ to $(x_1, y_1)$:
@@ -288,7 +288,7 @@ The crucial property exploited in hardware: edge functions, depth, and UV all ad
 \paragraph{BRAM port arrangement.} Each rasterized pixel touches multiple on-chip memories, but careful port assignment keeps steady-state throughput at one pixel per cycle.
 
 \begin{itemize}
-\item \textbf{Z-buffer:} read-modify-write per pixel. Implemented on a true dual-port M10K with the read port issuing the depth fetch on cycle $n$ and the write port committing the update on cycle $n+1$ --- a two-stage pipeline sustains one access per cycle. Alternatively, a single-port BRAM clocked at 2$\times$ the rasterizer rate would serve both accesses; we prefer the dual-port approach for simpler timing closure.
+\item \textbf{Z-buffer:} read-modify-write per pixel. Implemented on a true dual-port M10K with the read port issuing the depth fetch on cycle $n$ and the write port committing the update on cycle $n+1$ --- a two-stage pipeline sustains one access per cycle. Within a single quad, consecutive pixels address distinct cells so no read-after-write hazard arises; at quad boundaries the rasterizer inserts one idle cycle while edge, depth, and UV coefficients are reloaded, which also drains any in-flight write before the next quad's first read is issued. Alternatively, a single-port BRAM clocked at 2$\times$ the rasterizer rate would serve both accesses; we prefer the dual-port approach for simpler timing closure.
 \item \textbf{Framebuffer:} one write per passing pixel on the rasterizer-facing port. The opposite port belongs to the scanout pipeline. Because the design is double-buffered (the rasterizer writes the \emph{back} buffer while scanout reads the \emph{front}), there is no port contention between the two domains --- they target different BRAMs until \texttt{VGPU\_FLIP}.
 \item \textbf{Texture BRAM:} one read per textured pixel. Single-port sufficient; rasterizer stalls one cycle if a simultaneous access is needed (not triggered in the current design).
 \item \textbf{Z-buffer clear (\texttt{CLR}).} Clearing 320$\times$240 = 76{,}800 entries is a linear sweep over the Z-buffer, one write per FPGA cycle. At 50~MHz that takes $\sim$1.5~ms, short relative to the 16.6~ms frame budget; the rasterizer stays idle via \texttt{BSY}/\texttt{CLR} handshake until the sweep completes.
@@ -326,7 +326,7 @@ i.e., the low bit of each counter is dropped. The same address is therefore pres
 
 \subsection{Texture Lookup (hardware)}
 
-Textures are 16$\times$16 palette-indexed tiles stored in BRAM. The rasterizer carries $u$ and $v$ as Q16.16 fixed-point (matching the descriptor format); only the low four integer bits select the texel. Nearest-neighbor lookup:
+Textures are 16$\times$16 palette-indexed tiles stored in BRAM. The rasterizer carries $u$ and $v$ as Q16.16 fixed-point. The full integer range is not needed for a 16$\times$16 tile --- only the low four integer bits index the texel, with higher bits masked (equivalently, $\bmod\,16$) to wrap --- but Q16.16's fractional precision ($2^{-16}$ per step) keeps accumulated interpolation error well under a texel across a full 320-pixel scan line, whereas a narrower format such as Q8.8 would drift by over one texel per row and produce visible seams. Nearest-neighbor lookup:
 \[ \text{texel} = \text{tex\_ram}[\text{texture\_id}][\lfloor u \rfloor \bmod 16][\lfloor v \rfloor \bmod 16] \]
 The output is an 8-bit palette index, written directly to the framebuffer.
 
@@ -402,7 +402,7 @@ reserved & CLR & FLP & EN \\
 \end{tabular}
 \end{center}
 
-\begin{tabular}{rll}
+\begin{tabular}{rlp{0.62\linewidth}}
 Bit 0 & EN  & Rasterizer enable. 0 = idle, safe to reconfigure; 1 = process FIFO. \\
 Bit 1 & FLP & Buffer flip request. Write 1 to swap front/back on next vsync. Auto-clears. \\
 Bit 2 & CLR & Z-buffer clear. Write 1 to clear; auto-clears when done. \\
@@ -426,9 +426,9 @@ reserved & FIFO\_WORDS & VSY & FEM & FFL & BSY \\
 \end{tabular}
 \end{center}
 
-\begin{tabular}{rll}
+\begin{tabular}{rlp{0.62\linewidth}}
 Bit 0 & BSY & Rasterizer busy (actively processing a quad). \\
-Bit 1 & FFL & Command FIFO full. Status-only indicator: when set, subsequent FIFO writes are stalled by the slave asserting Avalon \texttt{waitrequest} until a slot frees (no data is dropped). Software reads FFL only as a hint to pace its writes. \\
+Bit 1 & FFL & Command FIFO full. Subsequent writes are back-pressured by the slave asserting Avalon \texttt{waitrequest} until a slot frees (no data is dropped); software reads FFL only as a hint to pace writes. \\
 Bit 2 & FEM & Command FIFO empty. \\
 Bit 3 & VSY & Currently in vertical blanking interval (safe to flip). \\
 Bits 15:4 & FIFO\_WORDS & Number of 32-bit words currently queued in the command FIFO, 0--2048. \\
@@ -591,7 +591,7 @@ The project is structured so that each phase produces a runnable, end-to-end sys
 
 \item \textbf{Integration.} Wire the user-space pipeline to the FPGA rasterizer via the driver. Render a small static scene of flat-shaded cubes using hardware acceleration at $\geq$30~fps.
 
-\item \textbf{Camera and interaction.} First-person camera movement with USB keyboard and mouse (evdev). Block placement and destruction via mouse buttons, with incremental chunk remeshing.
+\item \textbf{Camera and interaction.} First-person camera movement with USB keyboard and mouse (evdev). Block placement and destruction via mouse buttons, with per-chunk face-list regeneration: when a block changes, only the exposed-face list for the affected chunk (and its immediate neighbours across the modified face) is recomputed, not the whole world.
 
 \item \textbf{Texturing.} Populate texture BRAM via \texttt{\$readmemh}, enable the \texttt{TEX} flag path in the rasterizer, and add per-pixel UV interpolation and nearest-neighbor lookup. Final deliverable: a textured block world the player can walk through and modify at 60~fps.
 \end{enumerate}
