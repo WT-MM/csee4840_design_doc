@@ -1,6 +1,6 @@
 # Fdb version 4
-["pdflatex"] 1776435428.04995 "/Users/wesleymaa/Columbia/embedded_csee4840/design_doc/writeup/block-game-design-document.tex" "block-game-design-document.pdf" "block-game-design-document" 1776435428.90054 0
-  "/Users/wesleymaa/Columbia/embedded_csee4840/design_doc/writeup/block-game-design-document.tex" 1776435427.79647 39243 6b105b6768e28ac57ef85eb0c0ef7ca6 ""
+["pdflatex"] 1776441368.3697 "/Users/wesleymaa/Columbia/embedded_csee4840/design_doc/writeup/block-game-design-document.tex" "block-game-design-document.pdf" "block-game-design-document" 1776441369.33983 0
+  "/Users/wesleymaa/Columbia/embedded_csee4840/design_doc/writeup/block-game-design-document.tex" 1776441368.19097 57396 c62f7c9b0ad82db13534e08676dad20f ""
   "/usr/local/texlive/2024/texmf-dist/fonts/enc/dvips/cm-super/cm-super-ts1.enc" 1136849721 2900 1537cc8184ad1792082cd229ecc269f4 ""
   "/usr/local/texlive/2024/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/local/texlive/2024/texmf-dist/fonts/tfm/jknappen/ec/tcrm1095.tfm" 1136768653 1536 02c06700a42be0f5a28664c7273f82e7 ""
@@ -146,6 +146,7 @@
   "/usr/local/texlive/2024/texmf-dist/tex/latex/base/article.cls" 1705352648 20144 147463a6a579f4597269ef9565205cfe ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/base/atbegshi-ltx.sty" 1705352648 3045 273c666a54e60b9f730964f431a56c1b ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/base/atveryend-ltx.sty" 1705352648 2462 6bc53756156dbd71c1ad550d30a3b93f ""
+  "/usr/local/texlive/2024/texmf-dist/tex/latex/base/omscmr.fd" 1705352648 2469 74341109f164f230581718c66211c718 ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/base/size11.clo" 1705352648 8464 59874a3b0776c73e2a138b025d8473dd ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/base/ts1cmtt.fd" 1705352648 2287 003e26f17fb2011982a0904ffee9cab0 ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/booktabs/booktabs.sty" 1579038678 6078 f1cb470c9199e7110a27851508ed7a5c ""
@@ -176,6 +177,8 @@
   "/usr/local/texlive/2024/texmf-dist/tex/latex/listings/listings.cfg" 1708549794 1830 20af84c556326f7c12b9202ebe363f56 ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/listings/listings.sty" 1708549794 81322 d02238bdeb305f2c9f9d0229f99371d0 ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/listings/lstlang1.sty" 1708549794 205167 fca232873050cd2da4f9c0c32402c38a ""
+  "/usr/local/texlive/2024/texmf-dist/tex/latex/listings/lstlang2.sty" 1708549794 93888 276ea2c46a9802155d8e1165b7aaad8e ""
+  "/usr/local/texlive/2024/texmf-dist/tex/latex/listings/lstlang3.sty" 1708549794 90075 682e7daa026178e455e06c69c0ec59c6 ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/listings/lstmisc.sty" 1708549794 77022 5c8c440739265e7ba15b8379ece6ecd7 ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/listings/lstpatch.sty" 1708549794 329 f19f5da7234b51d16764e23d20999c73 ""
   "/usr/local/texlive/2024/texmf-dist/tex/latex/pgf/basiclayer/pgf.sty" 1601326656 1090 bae35ef70b3168089ef166db3e66f5b2 ""
@@ -198,10 +201,10 @@
   "/usr/local/texlive/2024/texmf-var/fonts/map/pdftex/updmap/pdftex.map" 1734405915.77669 5467645 128b85b7cde5f5edc5cb7f1dd7ff8736 ""
   "/usr/local/texlive/2024/texmf-var/web2c/pdftex/pdflatex.fmt" 1734405831 8221433 3623a3b441f789a485afa79adffb51c7 ""
   "/usr/local/texlive/2024/texmf.cnf" 1710266656 577 e590dabc9e28c5b61546e15f63eebcdf ""
-  "block-game-design-document.aux" 1776435428.81927 6024 6b2a765d98852c8ce2d13d9c2a3f8778 "pdflatex"
-  "block-game-design-document.out" 1776435428.82021 3900 a9a8681195e44642db8db0039ee7e2d8 "pdflatex"
-  "block-game-design-document.tex" 1776435427.79647 39243 6b105b6768e28ac57ef85eb0c0ef7ca6 ""
-  "block-game-design-document.toc" 1776435428.82043 2149 52f9d4fe4de2162b5e7621ae105db142 "pdflatex"
+  "block-game-design-document.aux" 1776441369.25783 7766 b3fc73ce62a6325eac4d477246cdfdf4 "pdflatex"
+  "block-game-design-document.out" 1776441369.25877 5030 e476b92a7a106912bd89864e9c5a925e "pdflatex"
+  "block-game-design-document.tex" 1776441368.19097 57396 c62f7c9b0ad82db13534e08676dad20f ""
+  "block-game-design-document.toc" 1776441369.25904 2892 5e5f4ef4418855b61dd0478e01bb7456 "pdflatex"
   (generated)
   "block-game-design-document.aux"
   "block-game-design-document.log"

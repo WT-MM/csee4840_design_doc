@@ -57,7 +57,40 @@ Every face in a block world is a rectangle, so we rasterize \textbf{quadrilatera
 
 \section{System Block Diagram}
 
-The system consists of twelve major functional blocks split across software (user-space C on Linux, blocks~1--5), a kernel driver (block~6), and hardware (SystemVerilog on the FPGA fabric, blocks~7--12), connected through the Avalon memory-mapped bus.
+\subsection{Top-Level View}
+
+At the coarsest level the system is three things on the DE1-SoC board plus two external devices: the ARM HPS running Linux, a single custom FPGA peripheral (\texttt{voxel\_gpu}), and the on-board ADV7123 VGA DAC feeding the monitor. A USB keyboard and mouse attach to the HPS USB host controller; the HPS talks to \texttt{voxel\_gpu} exclusively through the lightweight HPS-to-FPGA bridge.
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[
+  x=1.4cm, y=1.0cm,
+  tlblock/.style={rectangle, draw, thick, minimum width=3.2cm, minimum height=1.2cm,
+                  align=center, font=\small, fill=blue!8},
+  extblock/.style={rectangle, draw=gray!70, fill=gray!10, thick,
+                   minimum width=2.0cm, minimum height=0.9cm, align=center, font=\footnotesize},
+  arrow/.style={-Stealth, thick},
+  biarrow/.style={Stealth-Stealth, thick},
+  elbl/.style={font=\scriptsize\itshape, fill=white, inner sep=1pt}
+]
+\node[extblock] (usb) at (0, 2) {USB kbd\\+ mouse};
+\node[tlblock]  (hps) at (3, 2) {HPS\\(ARM Cortex-A9\\Linux)};
+\node[tlblock]  (vgpu) at (7, 2) {\texttt{voxel\_gpu}\\(FPGA peripheral)};
+\node[extblock] (vga) at (10.5, 2) {VGA\\monitor};
+
+\draw[arrow] (usb) -- node[elbl,above]{USB HID} (hps);
+\draw[biarrow] (hps) -- node[elbl,above]{Avalon-MM, 32b}
+                       node[elbl,below]{\texttt{0xFF20\_0000}} (vgpu);
+\draw[arrow] (vgpu) -- node[elbl,above]{RGB888, 640$\times$480@60Hz}
+                       node[elbl,below]{25.175~MHz via ADV7123} (vga);
+\end{tikzpicture}
+\caption{Top-level view. The dashed region in Figure~\ref{fig:blockdiagram} expands the \texttt{voxel\_gpu} peripheral and the software stack running on the HPS.}
+\label{fig:toplevel}
+\end{figure}
+
+\subsection{Internal Block Diagram}
+
+The \texttt{voxel\_gpu} peripheral and the software stack on the HPS together comprise twelve major functional blocks split across software (user-space C on Linux, blocks~1--5), a kernel driver (block~6), and hardware (SystemVerilog on the FPGA fabric, blocks~7--12).
 
 \begin{figure}[!htbp]
 \centering
@@ -172,7 +205,7 @@ The system consists of twelve major functional blocks split across software (use
 \textbf{Software blocks (user space, running on ARM Cortex-A9 under Linux):}
 
 \begin{enumerate}
-\item \textbf{Input Handler}: Reads USB keyboard and mouse events from \texttt{/dev/input/event*} using the Linux evdev API. Produces camera deltas (yaw, pitch, translation) and block place/destroy events each frame.
+\item \textbf{Input Handler}: Reads USB keyboard and mouse events from \texttt{/dev/input/event*} using the Linux evdev API, which surfaces decoded USB HID reports as \texttt{struct input\_event}\,\{\texttt{timeval}, \texttt{type}, \texttt{code}, \texttt{value}\} records. Concretely, a USB boot-protocol mouse produces 3-byte reports of $\{\text{buttons}, dx, dy\}$ at $\sim$125~Hz, which the kernel HID layer decodes into \texttt{EV\_REL}/\texttt{REL\_X}/\texttt{REL\_Y} events; a boot keyboard produces 8-byte reports (modifier mask plus up to six keycodes) that surface as \texttt{EV\_KEY}. Our handler accumulates these between frames and produces camera deltas (yaw, pitch, translation) and block place/destroy events each frame.
 
 \item \textbf{Game Logic}: Maintains world state as 16$\times$16$\times$16 chunks of block IDs. Processes player actions and updates the world array in place.
 
@@ -544,7 +577,7 @@ Bits 7:2 & --- & Reserved \\
 
 Per-pixel UV is interpolated incrementally using the same adder-per-step scheme as the edge functions: $u \mathrel{{+}{=}} du\_dx$ per $x$ step, $u \mathrel{{+}{=}} du\_dy$ per row (and similarly for $v$). The rasterizer fetches a texel via nearest-neighbor lookup into the tile indexed by \texttt{tex\_or\_color} (interpreted as a 6-bit tile index when \texttt{TEX=1}).
 
-\noindent\textbf{Texture upload.} For v1, the 64 texture tiles will be baked into BRAM at synthesis using \texttt{\$readmemh} against a hex file produced by an offline asset pipeline; no runtime texture upload path exists. A second write window analogous to the palette port is a straightforward extension if dynamic texture loading becomes necessary.
+\noindent\textbf{Texture upload and hex file format.} For v1, the 64 texture tiles will be baked into BRAM at synthesis using \texttt{\$readmemh} against an ASCII hex file \texttt{textures.hex} produced by an offline asset pipeline. The file contains exactly $64 \cdot 16 \cdot 16 = 16384$ lines; each line is a two-character hexadecimal palette index (\texttt{00}--\texttt{FF}) and a newline. Ordering is tile-major, then row-major within a tile: line $256 \cdot t + 16 \cdot v + u$ holds the palette index for texel $(u,v)$ of tile~$t$. The asset pipeline (offline Python) reads 16$\times$16 PNGs, quantizes each pixel's RGB to the nearest palette entry, and emits this format. No runtime texture upload path exists in v1; a second write window analogous to the palette port is a straightforward extension.
 
 \subsection{IOCTL Interface}
 \label{sec:ioctl}
@@ -568,6 +601,93 @@ The device driver exposes \texttt{/dev/voxel\_gpu} with the following ioctls:
 
 Quad descriptor writes happen through ordinary \texttt{write()} calls on the device, which the driver forwards to \texttt{FIFO\_WINDOW} in bursts using \texttt{iowrite32}.
 
+\subsection{Software Interface: C Header}
+\label{sec:header}
+
+The register map, quad descriptor layout, and ioctl interface described above are exposed to both the Linux kernel driver and the user-space game through a single shared header \texttt{voxel\_gpu.h}. The types and constants below are the canonical declarations; the wire layout in \S\ref{sec:quaddesc} is derived from these \texttt{\_\_attribute\_\_((packed))} structs.
+
+\begin{lstlisting}[language=C]
+/* voxel_gpu.h -- shared between kernel driver and user-space game */
+#ifndef VOXEL_GPU_H
+#define VOXEL_GPU_H
+#include <linux/ioctl.h>
+#include <stdint.h>
+
+/* ---- Register map (byte offsets from LW bridge base 0xFF20_0000) ---- */
+#define VGPU_REG_CONTROL        0x0000  /* R/W */
+#define VGPU_REG_STATUS         0x0004  /* R   */
+#define VGPU_REG_FRAME_COUNT    0x0008  /* R   */
+#define VGPU_REG_PALETTE_ADDR   0x000C  /* W   */
+#define VGPU_REG_PALETTE_DATA   0x0010  /* W   */
+#define VGPU_FIFO_WINDOW_BASE   0x1000
+#define VGPU_FIFO_WINDOW_SIZE   0x2000  /* 8 KB, 2048 words */
+
+/* ---- CONTROL register (0x00) ---- */
+#define VGPU_CTRL_EN            (1u << 0)
+#define VGPU_CTRL_FLP           (1u << 1)
+#define VGPU_CTRL_CLR           (1u << 2)
+
+/* ---- STATUS register (0x04) ---- */
+#define VGPU_STAT_BSY           (1u << 0)
+#define VGPU_STAT_FFL           (1u << 1)
+#define VGPU_STAT_FEM           (1u << 2)
+#define VGPU_STAT_VSY           (1u << 3)
+#define VGPU_STAT_FIFO_WORDS(s) (((s) >> 4) & 0xFFF)   /* [15:4], 0..2048 */
+
+/* ---- Quad descriptor layout (64 B; a second 64 B block follows if TEX) ---- */
+#define QUAD_FLAG_TEX           (1u << 0)
+#define QUAD_FLAG_ZTEST         (1u << 1)
+
+struct edge_coef { int32_t A, B, C; };  /* signed Q24.8 */
+
+struct quad_desc {                  /* always present, 64 bytes */
+    int16_t           x_min, y_min, x_max, y_max;   /* screen-space bbox */
+    struct edge_coef  edges[4];                     /* 4 * 12 = 48 B */
+    uint16_t          z0;           /* Q1.15 unsigned, depth at (x_min, y_min) */
+    int16_t           dz_dx, dz_dy; /* Q1.15 signed, depth gradients */
+    uint8_t           tex_or_color; /* TEX=1: tile id; TEX=0: palette idx */
+    uint8_t           flags;        /* QUAD_FLAG_* */
+} __attribute__((packed));
+_Static_assert(sizeof(struct quad_desc) == 64, "quad_desc must be 64 B");
+
+struct quad_desc_uv {               /* appended iff flags & QUAD_FLAG_TEX */
+    int32_t  u0, v0;                /* Q16.16, UV at (x_min, y_min) */
+    int32_t  du_dx, dv_dx;           /* Q16.16, UV gradients along x */
+    int32_t  du_dy, dv_dy;           /* Q16.16, UV gradients along y */
+    uint8_t  reserved[40];          /* write 0 */
+} __attribute__((packed));
+_Static_assert(sizeof(struct quad_desc_uv) == 64, "quad_desc_uv must be 64 B");
+
+/* ---- IOCTL argument types ---- */
+struct vgpu_palette_entry {
+    uint8_t idx;
+    uint8_t r, g, b;
+};
+
+/* ---- IOCTL numbers ---- */
+#define VGPU_IOC_MAGIC          'V'
+#define VGPU_SET_PALETTE        _IOW(VGPU_IOC_MAGIC, 1, struct vgpu_palette_entry)
+#define VGPU_FLIP               _IO (VGPU_IOC_MAGIC, 2)
+#define VGPU_CLEAR_FRAME        _IO (VGPU_IOC_MAGIC, 3)
+#define VGPU_GET_STATUS         _IOR(VGPU_IOC_MAGIC, 4, uint32_t)
+#define VGPU_GET_FRAME_COUNT    _IOR(VGPU_IOC_MAGIC, 5, uint32_t)
+
+#endif /* VOXEL_GPU_H */
+\end{lstlisting}
+
+\paragraph{Driver entry points.} The kernel driver is a standard Linux platform driver binding to the device-tree compatible string \texttt{"csee4840,voxel\_gpu-1.0"}. The LW bridge is mapped in \texttt{probe} via the platform-resource ioremap helper, and the character-device \texttt{file\_operations} exposes the entry points below; \texttt{write()} is implemented as an \texttt{iowrite32} loop against \texttt{FIFO\_WINDOW}.
+
+\begin{lstlisting}[language=C]
+static int     voxel_gpu_probe  (struct platform_device *pdev);
+static int     voxel_gpu_remove (struct platform_device *pdev);
+static int     voxel_gpu_open   (struct inode *ino, struct file *f);
+static int     voxel_gpu_release(struct inode *ino, struct file *f);
+static ssize_t voxel_gpu_write  (struct file *f, const char __user *buf,
+                                 size_t len, loff_t *off);
+static long    voxel_gpu_ioctl  (struct file *f, unsigned int cmd,
+                                 unsigned long arg);
+\end{lstlisting}
+
 \subsection{Per-Frame Software Sequence}
 
 \begin{lstlisting}[language=C]
@@ -579,6 +699,235 @@ for each frame:
   4. write(fd, buf, total_bytes)
   5. ioctl(fd, VGPU_FLIP)   // blocks until rasterizer drains + vsync
 \end{lstlisting}
+
+\section{FPGA Module Hierarchy}
+\label{sec:modules}
+
+This section decomposes the \texttt{voxel\_gpu} peripheral into its constituent SystemVerilog modules, gives a minimal port signature for each, and lists which modules each of them instantiates. All signals are active-high unless named \texttt{\_n}; all logic runs in the 50~MHz \texttt{clk\_50} domain except \texttt{palette} and \texttt{vga\_scanout}, which also see the 25.175~MHz \texttt{clk\_vga} domain through the dual-port BRAMs.
+
+\subsection{Instantiation Tree}
+
+\begin{lstlisting}
+voxel_gpu_top
+|-- avalon_slave       -- HPS-facing register file + FIFO write gateway
+|-- cmd_fifo           -- 2048 * 32b BRAM FIFO (8 KB), command stream
+|-- quad_fetch         -- pops 32b words, reassembles quad_desc (+ uv if TEX)
+|-- rasterizer         -- bbox scan, pipeline
+|   |-- edge_eval      (x4, one per quad edge)
+|   |-- interp_unit_z  -- 16b Q1.15 depth interpolator
+|   |-- interp_unit_u  -- 32b Q16.16 u interpolator
+|   `-- interp_unit_v  -- 32b Q16.16 v interpolator
+|-- zbuffer            -- 76800 * 16b M10K, true dual-port (rast + clear)
+|-- texture_unit       -- 64 * 256 * 8b M10K, single-port read
+|-- framebuffer        -- 2 * 76800 * 8b M10K (front/back), dual-port, one-bit
+|                         `buffer_select` swapped on vsync by vga_scanout
+|-- palette            -- 256 * 24b M10K, dual-clock, write from avalon_slave,
+|                         read from vga_scanout
+|-- clear_sweep        -- FSM that issues parallel Z + FB back-buffer writes
+|-- vga_scanout        -- 640x480@60 timing, pixel doubling, FB+palette read,
+|                         DAC drive, frame_count and VSY handshake
+`-- pll_inst           -- altpll instance: 50->50 MHz + 50->25.175 MHz
+                         (Platform Designer IP, not authored here)
+\end{lstlisting}
+
+\subsection{Module Interfaces}
+
+Port lists below use SystemVerilog syntax; widths are in bits. Types \texttt{quad\_desc\_t} and \texttt{quad\_uv\_t} are packed structs whose field order matches the C \texttt{struct quad\_desc} / \texttt{struct quad\_desc\_uv} of \S\ref{sec:header} byte for byte. Common ports (\texttt{clk}, \texttt{rst\_n}) are omitted for brevity.
+
+\paragraph{Lab 3 interface alignment.} We keep the same Platform Designer conventions used in Lab 3: the peripheral is attached to \texttt{h2f\_lw\_axi\_master}, exported through a \texttt{vga} conduit using \texttt{vga\_r/g/b/hs/vs/blank\_n/sync\_n/clk}, and bound in device tree through \texttt{set\_module\_assignment} to compatible string \texttt{"csee4840,voxel\_gpu-1.0"}. Because the slave data width is 32 bits, \texttt{avs\_address} is \emph{word}-addressed at the RTL boundary (matching Lab 3's address-units rule); software-visible offsets in \S5.3 remain byte offsets from the mapped base address.
+
+\begin{lstlisting}[language=Verilog]
+module voxel_gpu_top (
+  input  logic        clk_50, clk_vga, rst_n,
+  // Avalon-MM slave (lightweight bridge)
+  input  logic [12:0] avs_address,       // word addr (13 bits in current Platform Designer export)
+  input  logic        avs_chipselect, avs_read, avs_write,
+  input  logic [3:0]  avs_byteenable,
+  input  logic [31:0] avs_writedata,
+  output logic [31:0] avs_readdata,
+  output logic        avs_waitrequest,
+  // VGA to ADV7123 DAC
+  output logic        vga_hs, vga_vs, vga_blank_n, vga_sync_n, vga_clk,
+  output logic [7:0]  vga_r, vga_g, vga_b
+);
+\end{lstlisting}
+
+\begin{lstlisting}[language=Verilog]
+module avalon_slave (
+  // Avalon-MM
+  input  logic [12:0] avs_address,       // word addressed (13-bit exported bus)
+  input  logic        avs_chipselect, avs_read, avs_write,
+  input  logic [3:0]  avs_byteenable,
+  input  logic [31:0] avs_writedata,
+  output logic [31:0] avs_readdata,
+  output logic        avs_waitrequest,   // asserted while cmd_fifo full
+  // Decoded control / status
+  output logic        ctrl_en, ctrl_flp_pulse, ctrl_clr_pulse,
+  input  logic        stat_bsy, stat_fem, stat_vsy,
+  input  logic [11:0] stat_fifo_words,
+  input  logic [31:0] frame_count,
+  // Palette write-port fan-out
+  output logic [7:0]  pal_w_idx,
+  output logic [23:0] pal_w_rgb,
+  output logic        pal_w_en,
+  // FIFO write-port fan-out
+  output logic [31:0] fifo_w_data,
+  output logic        fifo_w_en,
+  input  logic        fifo_full
+);
+\end{lstlisting}
+
+\begin{lstlisting}[language=Verilog]
+module cmd_fifo #(parameter DEPTH = 2048) (
+  input  logic [31:0] wr_data,
+  input  logic        wr_en,
+  output logic        full,
+  output logic [31:0] rd_data,
+  input  logic        rd_en,
+  output logic        empty,
+  output logic [11:0] level   // 0..2048, drives STATUS.FIFO_WORDS
+);
+\end{lstlisting}
+
+\begin{lstlisting}[language=Verilog]
+module quad_fetch (
+  input  logic        enable,        // ctrl_en
+  // FIFO read
+  output logic        fifo_rd_en,
+  input  logic [31:0] fifo_rd_data,
+  input  logic        fifo_empty,
+  // Valid/ready handoff to rasterizer
+  output quad_desc_t  quad_out,
+  output quad_uv_t    uv_out,
+  output logic        has_uv,        // mirrors flags.TEX
+  output logic        quad_valid,
+  input  logic        quad_ready
+);
+\end{lstlisting}
+
+\begin{lstlisting}[language=Verilog]
+module rasterizer (
+  // Quad intake
+  input  quad_desc_t  quad_in,
+  input  quad_uv_t    uv_in,
+  input  logic        has_uv,
+  input  logic        quad_valid,
+  output logic        quad_ready,
+  output logic        busy,
+  // Z-buffer (pipelined read at cycle n, conditional write at n+1)
+  output logic [16:0] zb_addr,       // 76800 entries -> 17-bit
+  output logic        zb_read, zb_write,
+  output logic [15:0] zb_wdata,
+  input  logic [15:0] zb_rdata,
+  // Framebuffer (back-buffer write)
+  output logic [16:0] fb_addr,
+  output logic        fb_we,
+  output logic [7:0]  fb_wdata,
+  // Texture read
+  output logic [13:0] tex_addr,      // {tile[5:0], v[3:0], u[3:0]}
+  output logic        tex_read,
+  input  logic [7:0]  tex_rdata
+);
+\end{lstlisting}
+
+\begin{lstlisting}[language=Verilog]
+module edge_eval (                   // instantiated four times
+  input  logic               load,
+  input  logic signed [31:0] E_init, step_x_val, step_y_val, // Q24.8
+  input  logic               save_row, restore_row, step_x, step_y_newrow,
+  output logic signed [31:0] E,
+  output logic               E_nonneg
+);
+
+module interp_unit #(parameter W = 32) (  // W=16 for z, 32 for u,v
+  input  logic               load,
+  input  logic signed [W-1:0] v_init, dv_dx, dv_dy,
+  input  logic               save_row, restore_row, step_x, step_y_newrow,
+  output logic signed [W-1:0] v_out
+);
+\end{lstlisting}
+
+\begin{lstlisting}[language=Verilog]
+module zbuffer (                     // 76800 * 16b, true dual-port M10K
+  // Port A: rasterizer pipelined RMW
+  input  logic [16:0] a_addr,
+  input  logic        a_read, a_write,
+  input  logic [15:0] a_wdata,
+  output logic [15:0] a_rdata,
+  // Port B: clear_sweep write
+  input  logic [16:0] b_addr,
+  input  logic        b_write,
+  input  logic [15:0] b_wdata
+);
+
+module texture_unit (                // 64 * 256 * 8b, single-port BRAM
+  input  logic [13:0] addr,
+  input  logic        read,
+  output logic [7:0]  texel          // initialised from textures.hex
+);
+
+module framebuffer (                 // two 76800 * 8b M10Ks + buffer mux
+  input  logic        buffer_select, // 0: port A is front, 1: port B is front
+  // Rasterizer / clear write into back buffer
+  input  logic [16:0] w_addr,
+  input  logic        w_en,
+  input  logic [7:0]  w_data,
+  // Scanout read from front buffer (clk_vga domain)
+  input  logic [16:0] r_addr,
+  output logic [7:0]  r_data
+);
+
+module palette (                     // 256 * 24b, dual-clock BRAM
+  // Write port (clk_50, from avalon_slave)
+  input  logic [7:0]  w_idx,
+  input  logic        w_en,
+  input  logic [23:0] w_rgb,
+  // Read port (clk_vga, from vga_scanout)
+  input  logic [7:0]  r_idx,
+  output logic [23:0] r_rgb
+);
+\end{lstlisting}
+
+\begin{lstlisting}[language=Verilog]
+module clear_sweep (                 // FSM: 76800-cycle linear sweep
+  input  logic        start,         // pulsed from ctrl_clr_pulse
+  output logic        busy,
+  output logic        done,          // pulsed on completion
+  output logic [16:0] addr,
+  output logic        z_we,
+  output logic [15:0] z_wdata,       // 16'hFFFF (far)
+  output logic        fb_we,
+  output logic [7:0]  fb_wdata       // 8'h00
+);
+
+module vga_scanout (                 // all outputs driven on clk_vga
+  // Timing + counters
+  output logic        hs, vs, blank_n, sync_n, vga_clk,
+  // Framebuffer read (front)
+  output logic [16:0] fb_r_addr,
+  input  logic [7:0]  fb_r_idx,
+  // Palette read
+  output logic [7:0]  pal_r_idx,
+  input  logic [23:0] pal_r_rgb,
+  // DAC
+  output logic [7:0]  dac_r, dac_g, dac_b,
+  // Handshake with ctrl/status
+  input  logic        flip_request,     // from ctrl_flp_pulse, latched to vsync
+  output logic        buffer_select,
+  output logic        frame_pulse,      // 1 clk each new frame
+  output logic        in_vblank         // drives STATUS.VSY
+);
+\end{lstlisting}
+
+\subsection{Handshake Conventions}
+
+\begin{itemize}
+\item \textbf{Avalon-MM slave} (HPS $\rightarrow$ \texttt{avalon\_slave}): standard Altera Avalon-MM. The slave asserts \texttt{avs\_waitrequest} while \texttt{cmd\_fifo.full} is high during a write to \texttt{FIFO\_WINDOW}, stalling the HPS master until a slot frees; no data is dropped.
+\item \textbf{Valid/ready} (\texttt{quad\_fetch} $\rightarrow$ \texttt{rasterizer}): producer asserts \texttt{quad\_valid} when an assembled descriptor is available; consumer asserts \texttt{quad\_ready} when the rasterizer has drained the current quad and re-loaded coefficients. Handoff occurs on cycles where both are high. Back-pressure is natural: \texttt{quad\_fetch} simply does not advance its FSM until \texttt{quad\_ready} is asserted.
+\item \textbf{Pipelined RMW} (\texttt{rasterizer} $\leftrightarrow$ \texttt{zbuffer}): on cycle $n$ the rasterizer drives \texttt{a\_addr} and \texttt{a\_read}; on cycle $n{+}1$ it has \texttt{a\_rdata}, computes the compare, and drives \texttt{a\_write}+\texttt{a\_wdata} for the \emph{same} address. Different consecutive pixel addresses guarantee no read-after-write hazard within a quad; at quad boundaries the rasterizer inserts a one-cycle bubble while reloading coefficients.
+\item \textbf{Clear handshake}: writing \texttt{CTRL.CLR} sets \texttt{ctrl\_clr\_pulse}, which raises \texttt{clear\_sweep.start}. While \texttt{clear\_sweep.busy} is high, \texttt{quad\_fetch} is held idle (it ANDs \texttt{enable} with \texttt{!busy}). When the sweep finishes \texttt{done} clears the \texttt{CTRL.CLR} bit.
+\item \textbf{Flip handshake}: \texttt{CTRL.FLP} sets \texttt{ctrl\_flp\_pulse}, latched into \texttt{vga\_scanout} on the \texttt{clk\_vga} domain via a two-flop synchronizer. The actual \texttt{buffer\_select} toggle is timed to the next \texttt{in\_vblank} rising edge, guaranteeing tear-free hand-off; the \texttt{VGPU\_FLIP} ioctl polls \texttt{STATUS.VSY} $\rightarrow$ \texttt{FRAME\_COUNT} increment to synchronously return.
+\end{itemize}
 
 \section{Milestones}
 
