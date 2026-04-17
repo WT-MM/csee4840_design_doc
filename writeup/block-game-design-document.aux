@@ -16,29 +16,29 @@
 \newlabel{sec:geom}{{3.3}{5}{Vertex Transformation and Quad Setup (software)}{subsection.3.3}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Quad Rasterization (hardware)}{6}{subsection.3.4}\protected@file@percent }
 \newlabel{sec:rast}{{3.4}{6}{Quad Rasterization (hardware)}{subsection.3.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{BRAM port arrangement.}{6}{lstnumber.-2.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{BRAM port arrangement.}{6}{lstnumber.-2.20}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.5}VGA Scanout with Palette Lookup (hardware)}{7}{subsection.3.5}\protected@file@percent }
 \@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces VGA scanout pipeline. Each stage is one cycle at the 25.175~MHz pixel clock; after priming, one pixel is driven to the DAC per clock.}}{7}{figure.caption.2}\protected@file@percent }
 \newlabel{fig:scanout}{{2}{7}{VGA scanout pipeline. Each stage is one cycle at the 25.175~MHz pixel clock; after priming, one pixel is driven to the DAC per clock}{figure.caption.2}{}}
 \@writefile{toc}{\contentsline {paragraph}{2$\times $2 pixel doubling.}{7}{figure.caption.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Texture Lookup (hardware)}{7}{subsection.3.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Affine vs.\ perspective-correct interpolation.}{7}{subsection.3.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Affine vs.\ perspective-correct interpolation.}{8}{subsection.3.6}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {4}Resource Budgets}{8}{section.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.1}On-chip BRAM}{8}{subsection.4.1}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces On-chip block RAM budget. Extra headroom for expansion if needed.}}{8}{table.caption.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.2}DDR3 (HPS side, 1 GB available)}{8}{subsection.4.2}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces DDR3 usage on the HPS side; effectively unbounded relative to our needs.}}{8}{table.caption.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Rasterizer Throughput}{8}{subsection.4.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Command Buffer Bandwidth}{8}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Command Buffer Bandwidth}{9}{subsection.4.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {5}Hardware/Software Interface}{9}{section.5}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Control Register Map}{9}{subsection.5.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Quad Descriptor Format}{10}{subsection.5.2}\protected@file@percent }
 \newlabel{sec:quaddesc}{{5.2}{10}{Quad Descriptor Format}{subsection.5.2}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Quad descriptor (64 bytes). Textured quads append a second 64-byte block carrying UV origin and gradients; flat-shaded quads omit the second block.}}{10}{table.caption.5}\protected@file@percent }
-\newlabel{tab:quaddesc}{{3}{10}{Quad descriptor (64 bytes). Textured quads append a second 64-byte block carrying UV origin and gradients; flat-shaded quads omit the second block}{table.caption.5}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Textured-quad UV block (64 bytes). Carries affine UV interpolation state consumed by the texture unit. The reserved tail keeps the block 64 bytes so all descriptors are a fixed multiple of 64.}}{11}{table.caption.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}IOCTL Interface}{11}{subsection.5.3}\protected@file@percent }
-\newlabel{sec:ioctl}{{5.3}{11}{IOCTL Interface}{subsection.5.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Per-Frame Software Sequence}{11}{subsection.5.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Quad descriptor (64 bytes). Textured quads append a second 64-byte block carrying UV origin and gradients; flat-shaded quads omit the second block.}}{11}{table.caption.5}\protected@file@percent }
+\newlabel{tab:quaddesc}{{3}{11}{Quad descriptor (64 bytes). Textured quads append a second 64-byte block carrying UV origin and gradients; flat-shaded quads omit the second block}{table.caption.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Textured-quad UV block (64 bytes). Carries affine UV interpolation state consumed by the texture unit. The reserved tail keeps the block 64 bytes so all descriptors are a fixed multiple of 64.}}{12}{table.caption.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}IOCTL Interface}{12}{subsection.5.3}\protected@file@percent }
+\newlabel{sec:ioctl}{{5.3}{12}{IOCTL Interface}{subsection.5.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Per-Frame Software Sequence}{12}{subsection.5.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {6}Milestones}{12}{section.6}\protected@file@percent }
 \gdef \@abspage@last{13}

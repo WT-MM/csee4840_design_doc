@@ -245,12 +245,12 @@ Before per-block work, reject entire chunks whose axis-aligned bounding boxes fa
 For each emitted quad (four vertices in world space):
 \begin{enumerate}
 \item Multiply each vertex by the combined model-view-projection matrix (4$\times$4, Q16.16 fixed-point).
-\item \textbf{Near-plane handling.} If any of the four vertices has $w \leq w_{\text{near}}$ (with $w_{\text{near}} = 0.05$ world units, i.e.\ $\sim$5\% of a block edge), the quad straddles or lies behind the near plane; perspective divide would produce invalid (negative or enormous) screen coordinates and the projected shape may be non-convex, breaking the edge-function test. For v1 we \emph{reject} such quads outright (cheap, one comparison per vertex). The visual artifact is that a face partially behind the camera pops out of view one frame early; acceptable given a small near-plane distance. A future revision can replace rejection with Sutherland--Hodgman clipping against the near plane, which splits the quad into a convex polygon of up to five vertices --- more work for the geometry stage but no change to the rasterizer contract.
+\item \textbf{Near-plane handling.} If any of the four vertices has $w \leq w_{\text{near}}$ (with $w_{\text{near}} = 0.1$ world units, i.e.\ 10\% of a block edge), the quad straddles or lies behind the near plane; perspective divide would produce invalid (negative or enormous) screen coordinates and the projected shape may be non-convex, breaking the edge-function test. For v1 we \emph{reject} such quads outright (cheap, one comparison per vertex). The visual artifact is that a face partially behind the camera pops out of view one frame early; acceptable given a small near-plane distance. A future revision can replace rejection with Sutherland--Hodgman clipping against the near plane, which splits the quad into a convex polygon of up to five vertices --- more work for the geometry stage but no change to the rasterizer contract.
 \item Perspective divide: divide $x, y, z$ by $w$.
 \item Viewport map: $\text{screen}_x = (x+1) \cdot 160$, $\text{screen}_y = (1-y) \cdot 120$.
 \item Compute four edge coefficients. For an edge from $(x_0, y_0)$ to $(x_1, y_1)$:
 \[ A = y_0 - y_1, \quad B = x_1 - x_0, \quad C = -(A \cdot x_0 + B \cdot y_0) \]
-The edge function $E(x,y) = Ax + By + C$ is non-negative on the interior side for CCW winding. Software packs each coefficient as signed Q24.8 (value $\cdot 256$) before writing to the descriptor; see the rationale following Table~\ref{tab:quaddesc}.
+The edge function $E(x,y) = Ax + By + C$ is non-negative on the interior side when vertices are emitted in screen-space clockwise order (equivalently, counterclockwise in NDC, before the $(1-y)$ viewport flip inverts handedness). Software packs each coefficient as signed Q24.8 (value $\cdot 256$) before writing to the descriptor; see the rationale following Table~\ref{tab:quaddesc}.
 \item Compute depth plane coefficients $z(x,y) = z_0 + \frac{dz}{dx}x + \frac{dz}{dy}y$ from the three screen-space vertices with their depths.
 \item Compute UV gradients for textured quads.
 \item Compute the screen-space bounding box, clamped to $[0, 319] \times [0, 239]$.
@@ -275,7 +275,10 @@ for y = y_min to y_max:
     if (E0 >= 0) and (E1 >= 0) and (E2 >= 0) and (E3 >= 0):
       z_cur = z_buffer[x, y]
       if z < z_cur:
-        color_idx = texture_fetch(u, v, texture_id)
+        if flags.TEX:
+          color_idx = texture_fetch(u, v, tex_or_color)
+        else:
+          color_idx = tex_or_color   // flat palette index
         framebuffer_back[x, y] = color_idx
         z_buffer[x, y] = z
     E0 += A0; E1 += A1; E2 += A2; E3 += A3
@@ -291,7 +294,7 @@ The crucial property exploited in hardware: edge functions, depth, and UV all ad
 \item \textbf{Z-buffer:} read-modify-write per pixel. Implemented on a true dual-port M10K with the read port issuing the depth fetch on cycle $n$ and the write port committing the update on cycle $n+1$ --- a two-stage pipeline sustains one access per cycle. Within a single quad, consecutive pixels address distinct cells so no read-after-write hazard arises; at quad boundaries the rasterizer inserts one idle cycle while edge, depth, and UV coefficients are reloaded, which also drains any in-flight write before the next quad's first read is issued. Alternatively, a single-port BRAM clocked at 2$\times$ the rasterizer rate would serve both accesses; we prefer the dual-port approach for simpler timing closure.
 \item \textbf{Framebuffer:} one write per passing pixel on the rasterizer-facing port. The opposite port belongs to the scanout pipeline. Because the design is double-buffered (the rasterizer writes the \emph{back} buffer while scanout reads the \emph{front}), there is no port contention between the two domains --- they target different BRAMs until \texttt{VGPU\_FLIP}.
 \item \textbf{Texture BRAM:} one read per textured pixel. Single-port sufficient; rasterizer stalls one cycle if a simultaneous access is needed (not triggered in the current design).
-\item \textbf{Z-buffer clear (\texttt{CLR}).} Clearing 320$\times$240 = 76{,}800 entries is a linear sweep over the Z-buffer, one write per FPGA cycle. At 50~MHz that takes $\sim$1.5~ms, short relative to the 16.6~ms frame budget; the rasterizer stays idle via \texttt{BSY}/\texttt{CLR} handshake until the sweep completes.
+\item \textbf{Frame clear (\texttt{CLR}).} A single linear sweep over the 76{,}800 pixel addresses writes both the Z-buffer (to \texttt{0xFFFF}) and the back framebuffer (to palette index 0) each cycle --- the two BRAMs have independent write ports, so both clears happen in parallel without extending the sweep. At 50~MHz this takes $\sim$1.5~ms, comfortably inside the 16.6~ms frame budget; the rasterizer stays idle via the \texttt{BSY}/\texttt{CLR} handshake until the sweep completes. Clearing the back framebuffer is necessary in v1 because there is no skybox; otherwise any pixel not covered by a rasterized quad would expose stale contents from two frames ago.
 \end{itemize}
 
 \subsection{VGA Scanout with Palette Lookup (hardware)}
@@ -327,7 +330,7 @@ i.e., the low bit of each counter is dropped. The same address is therefore pres
 \subsection{Texture Lookup (hardware)}
 
 Textures are 16$\times$16 palette-indexed tiles stored in BRAM. The rasterizer carries $u$ and $v$ as Q16.16 fixed-point. The full integer range is not needed for a 16$\times$16 tile --- only the low four integer bits index the texel, with higher bits masked (equivalently, $\bmod\,16$) to wrap --- but Q16.16's fractional precision ($2^{-16}$ per step) keeps accumulated interpolation error well under a texel across a full 320-pixel scan line, whereas a narrower format such as Q8.8 would drift by over one texel per row and produce visible seams. Nearest-neighbor lookup:
-\[ \text{texel} = \text{tex\_ram}[\text{texture\_id}][\lfloor u \rfloor \bmod 16][\lfloor v \rfloor \bmod 16] \]
+\[ \text{texel} = \text{tex\_ram}[\text{tex\_or\_color}][\lfloor u \rfloor \bmod 16][\lfloor v \rfloor \bmod 16] \quad (\texttt{TEX=1}) \]
 The output is an 8-bit palette index, written directly to the framebuffer.
 
 \paragraph{Affine vs.\ perspective-correct interpolation.} The UV gradients $du_{dx}, dv_{dx}, du_{dy}, dv_{dy}$ are \emph{affine} in screen space, so $u$ and $v$ advance by a constant per pixel --- the same adder-per-step scheme as the edge functions, and the reason texturing costs only two extra adds per pixel in hardware. Strictly, the correct quantities to interpolate linearly in screen space are $u/w$, $v/w$, and $1/w$, divided per pixel to recover true $u, v$; affine interpolation is an approximation that produces visible warping on quads at steep viewing angles (the classic ``PS1 look''). For a $320\times240$ viewport of block-game content, the artifact is rarely objectionable and saves one divider per pixel. \emph{Future fix:} add $1/w$, $u/w$, $v/w$ to the descriptor, pipeline a reciprocal unit (a $\sim$10-cycle Newton--Raphson iterator or a $2^{10}$-entry lookup) into the rasterizer, and divide per pixel; the rest of the pipeline is unchanged. This is a clean upgrade path once the affine version is working.
@@ -364,7 +367,7 @@ Quad command FIFO & 8~KB & $\sim$128 quads in flight \\
 \toprule
 \textbf{Resource} & \textbf{Size} \\
 \midrule
-World data (up to 32 chunks loaded, 4~KB each) & $\sim$128~KB \\
+World data (up to 128 chunks loaded, 4~KB each) & $\sim$512~KB \\
 Per-frame visible quad list & $<$64~KB \\
 Linux kernel + user program + assets & $<$64~MB \\
 \bottomrule
@@ -405,7 +408,7 @@ reserved & CLR & FLP & EN \\
 \begin{tabular}{rlp{0.62\linewidth}}
 Bit 0 & EN  & Rasterizer enable. 0 = idle, safe to reconfigure; 1 = process FIFO. \\
 Bit 1 & FLP & Buffer flip request. Write 1 to swap front/back on next vsync. Auto-clears. \\
-Bit 2 & CLR & Z-buffer clear. Write 1 to clear; auto-clears when done. \\
+Bit 2 & CLR & Frame clear. Write 1 to launch a linear sweep that writes Z-buffer $\leftarrow$ \texttt{0xFFFF} (far) and back framebuffer $\leftarrow$ palette index 0 in parallel, one pair of writes per cycle (the two BRAMs have independent write ports). Auto-clears when the sweep completes. Both buffers must be cleared every frame since without a skybox, uncovered back-buffer pixels would otherwise show stale contents from two frames ago. \\
 Bits 31:3 & --- & Reserved, write 0. \\
 \end{tabular}
 
@@ -470,7 +473,7 @@ Each descriptor is 64 bytes, written as 16 consecutive 32-bit little-endian word
 \begin{table}[h]
 \centering
 \small
-\begin{tabular}{rrlll}
+\begin{tabular}{rrllp{0.36\linewidth}}
 \toprule
 \textbf{Offset} & \textbf{Size} & \textbf{Field} & \textbf{Format} & \textbf{Meaning} \\
 \midrule
@@ -493,7 +496,7 @@ Each descriptor is 64 bytes, written as 16 consecutive 32-bit little-endian word
 56 & 2 & \texttt{z0}        & uint16 Q1.15      & Depth at $(x_{\min}, y_{\min})$; range $[0,\,2)$ \\
 58 & 2 & \texttt{dz\_dx}    & int16 Q1.15       & Depth gradient, $x$; range $[-1,\,1)$ \\
 60 & 2 & \texttt{dz\_dy}    & int16 Q1.15       & Depth gradient, $y$; range $[-1,\,1)$ \\
-62 & 1 & \texttt{texture\_id} & uint8           & Texture index (0--63) \\
+62 & 1 & \texttt{tex\_or\_color} & uint8         & \texttt{TEX=1}: texture index (0--63); \texttt{TEX=0}: 8-bit palette index (flat color) \\
 63 & 1 & \texttt{flags}     & uint8             & See below \\
 \bottomrule
 \end{tabular}
@@ -501,10 +504,12 @@ Each descriptor is 64 bytes, written as 16 consecutive 32-bit little-endian word
 \label{tab:quaddesc}
 \end{table}
 
-\noindent\textbf{Edge-coefficient format rationale.} Screen-space $x$ ranges up to 319 and $y$ up to 239, so the edge function $E(x,y) = A\cdot x + B\cdot y + C$ with $A = y_0{-}y_1$, $B = x_1{-}x_0$, $C = -(A\cdot x_0 + B\cdot y_0)$ can reach $|E|_{\max} \approx 2\cdot\text{area} \lesssim 77{,}000$ for a viewport-sized quad. That is beyond the $\pm 32{,}768$ integer range of Q16.16 --- a naive Q16.16 accumulator would silently wrap. Q24.8 gives integer range $\pm 8.4$M (23 bits of integer magnitude, comfortably more than the 17 needed) while retaining $2^{-8}$ sub-pixel precision for future MSAA-style sampling. Software packs integer pixel deltas as $\texttt{A} = (y_0{-}y_1)\cdot 256$ etc. --- a single shift in C on the ARM side.
+\noindent\textbf{Edge-coefficient format rationale.} Screen-space $x$ ranges up to 319 and $y$ up to 239, so the edge function $E(x,y) = A\cdot x + B\cdot y + C$ with $A = y_0{-}y_1$, $B = x_1{-}x_0$, $C = -(A\cdot x_0 + B\cdot y_0)$ can reach $|E|_{\max} \approx 2\cdot\text{area} \lesssim 77{,}000$ for a viewport-sized quad. That is beyond the $\pm 32{,}768$ integer range of Q16.16 --- a naive Q16.16 accumulator would silently wrap. Q24.8 gives integer range $\pm 8.4$M (23 bits of integer magnitude, comfortably more than the 17 needed) while retaining $2^{-8}$ sub-pixel precision for future MSAA-style sampling. Screen-space vertex coordinates are fractional after perspective divide and viewport mapping, so software computes the real-valued deltas and then rounds to Q24.8 on the ARM: $\texttt{A} = \operatorname{round}((y_0 - y_1) \cdot 256)$ and similarly for $B, C$. A single multiply-and-round per coefficient, 12 per quad.
 
 \vspace{0.8em}
-\noindent\textbf{Depth format rationale.} Viewport-mapped depth lands in $[0,\,1]$ nominally, but the interpolated value $z_0 + \mathrm{d}z_{\mathrm{d}x}\cdot\Delta x + \mathrm{d}z_{\mathrm{d}y}\cdot\Delta y$ at the far corner of a large bounding box can slightly exceed 1 due to fixed-point rounding and edge-function inclusivity. Q1.15 for \texttt{z0} (range $[0, 2)$) absorbs this margin while keeping the same 16-bit width as the Z-buffer. Per-pixel depth gradients in a $320\times240$ viewport with near/far clip at 0.1/100 never exceed a few parts per thousand, so signed Q1.15 gives $\sim$3$\times 10^{-5}$ precision --- a better fit than Q4.12 given the actual dynamic range.
+\noindent\textbf{Depth format rationale.} Viewport-mapped depth lands in $[0,\,1]$ nominally, but the interpolated value $z_0 + \mathrm{d}z_{\mathrm{d}x}\cdot\Delta x + \mathrm{d}z_{\mathrm{d}y}\cdot\Delta y$ at the far corner of a large bounding box can slightly exceed 1 due to fixed-point rounding and edge-function inclusivity. Q1.15 for \texttt{z0} (range $[0, 2)$) absorbs this margin while keeping the same 16-bit width as the Z-buffer. Per-pixel depth gradients in a $320\times240$ viewport with near/far clip at $0.1/100$ never exceed a few parts per thousand, so signed Q1.15 gives $\sim$3$\times 10^{-5}$ precision --- a better fit than Q4.12 given the actual dynamic range.
+
+\noindent\textbf{Depth precision budget.} Because perspective projection maps $z_{\text{eye}}$ to $z_{\text{ndc}} \approx 1 - \text{near}/z_{\text{eye}}$, depth resolution is non-uniform: the gap between two eye-space samples one unit apart is $\Delta z_{\text{ndc}} \approx \text{near}/z_{\text{eye}}^2$. With $\text{near} = 0.1$ and Q1.15 quantization ($2^{-15} \approx 3 \times 10^{-5}$), one unit of depth resolves to $\sim$33 steps at $z_e = 10$, $\sim$4 steps at $z_e = 30$, and drops to $\sim$1 step at $z_e \approx 55$. In practice we cap game-logic render distance at 3 chunk widths ($\approx$48 world units, since chunks are $16^3$) so every visible face comparison has at least one code of depth separation per unit. Faces beyond this are culled at the visibility stage rather than trusted to the Z-buffer. A future revision can switch to 24-bit reciprocal-$z$ storage for uniform precision, at the cost of an extra BRAM bit per pixel.
 
 \vspace{0.8em}
 \noindent\textbf{Flags byte (offset 63):}
@@ -521,7 +526,7 @@ Bits 7:2 & --- & Reserved \\
 \begin{table}[h]
 \centering
 \small
-\begin{tabular}{rrlll}
+\begin{tabular}{rrllp{0.36\linewidth}}
 \toprule
 \textbf{Offset} & \textbf{Size} & \textbf{Field} & \textbf{Format} & \textbf{Meaning} \\
 \midrule
@@ -537,7 +542,7 @@ Bits 7:2 & --- & Reserved \\
 \caption{Textured-quad UV block (64 bytes). Carries affine UV interpolation state consumed by the texture unit. The reserved tail keeps the block 64 bytes so all descriptors are a fixed multiple of 64.}
 \end{table}
 
-Per-pixel UV is interpolated incrementally using the same adder-per-step scheme as the edge functions: $u \mathrel{{+}{=}} du\_dx$ per $x$ step, $u \mathrel{{+}{=}} du\_dy$ per row (and similarly for $v$). The rasterizer fetches a texel via nearest-neighbor lookup into the tile indexed by \texttt{texture\_id}.
+Per-pixel UV is interpolated incrementally using the same adder-per-step scheme as the edge functions: $u \mathrel{{+}{=}} du\_dx$ per $x$ step, $u \mathrel{{+}{=}} du\_dy$ per row (and similarly for $v$). The rasterizer fetches a texel via nearest-neighbor lookup into the tile indexed by \texttt{tex\_or\_color} (interpreted as a 6-bit tile index when \texttt{TEX=1}).
 
 \noindent\textbf{Texture upload.} For v1, the 64 texture tiles will be baked into BRAM at synthesis using \texttt{\$readmemh} against a hex file produced by an offline asset pipeline; no runtime texture upload path exists. A second write window analogous to the palette port is a straightforward extension if dynamic texture loading becomes necessary.
 
@@ -546,21 +551,20 @@ Per-pixel UV is interpolated incrementally using the same adder-per-step scheme 
 
 The device driver exposes \texttt{/dev/voxel\_gpu} with the following ioctls:
 
-\begin{table}[h]
-\centering
+\begin{center}
 \small
-\begin{tabular}{lll}
+\begin{tabular}{llp{0.38\linewidth}}
 \toprule
 \textbf{ioctl} & \textbf{Argument} & \textbf{Function} \\
 \midrule
 \texttt{VGPU\_SET\_PALETTE}   & \texttt{struct \{uint8\_t idx,r,g,b;\}} & Upload one palette entry \\
 \texttt{VGPU\_FLIP}           & none                          & Flip on next vsync (blocking) \\
-\texttt{VGPU\_CLEAR\_Z}       & none                          & Clear z-buffer (blocking) \\
+\texttt{VGPU\_CLEAR\_FRAME}   & none                          & Clear Z-buffer and back framebuffer (blocking) \\
 \texttt{VGPU\_GET\_STATUS}    & \texttt{uint32\_t*} (out)      & Read STATUS register \\
 \texttt{VGPU\_GET\_FRAME\_COUNT} & \texttt{uint32\_t*} (out)  & Read FRAME\_COUNT \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 Quad descriptor writes happen through ordinary \texttt{write()} calls on the device, which the driver forwards to \texttt{FIFO\_WINDOW} in bursts using \texttt{iowrite32}.
 
@@ -569,7 +573,7 @@ Quad descriptor writes happen through ordinary \texttt{write()} calls on the dev
 \begin{lstlisting}[language=C]
 for each frame:
   1. poll input, update game state
-  2. ioctl(fd, VGPU_CLEAR_Z)
+  2. ioctl(fd, VGPU_CLEAR_FRAME)  // clears Z and back FB in parallel
   3. cull chunks, cull faces, transform quads -> quad_desc[]
      //   total_bytes = flat_count * 64 + textured_count * 128
   4. write(fd, buf, total_bytes)
@@ -591,7 +595,7 @@ The project is structured so that each phase produces a runnable, end-to-end sys
 
 \item \textbf{Integration.} Wire the user-space pipeline to the FPGA rasterizer via the driver. Render a small static scene of flat-shaded cubes using hardware acceleration at $\geq$30~fps.
 
-\item \textbf{Camera and interaction.} First-person camera movement with USB keyboard and mouse (evdev). Block placement and destruction via mouse buttons, with per-chunk face-list regeneration: when a block changes, only the exposed-face list for the affected chunk (and its immediate neighbours across the modified face) is recomputed, not the whole world.
+\item \textbf{Camera and interaction.} First-person camera movement with USB keyboard and mouse (evdev). Block placement and destruction via mouse buttons, with per-chunk face-list regeneration: when a block changes, only the exposed-face list for the affected chunk (and its immediate neighbors across the modified face) is recomputed, not the whole world.
 
 \item \textbf{Texturing.} Populate texture BRAM via \texttt{\$readmemh}, enable the \texttt{TEX} flag path in the rasterizer, and add per-pixel UV interpolation and nearest-neighbor lookup. Final deliverable: a textured block world the player can walk through and modify at 60~fps.
 \end{enumerate}
